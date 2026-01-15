@@ -27,7 +27,7 @@ export async function getSafetyAnalysis(origin: string, destination: string, mod
   try {
     // User requested "gemini-3-flash" (2026 Model) with JSON Mode
     const model = genAI.getGenerativeModel({
-      model: "gemini-3-flash",
+      model: "gemini-3-flash-preview",
       generationConfig: { responseMimeType: "application/json" },
       systemInstruction: "You are an expert urban safety analyst. Analyze the route between the two points provided. Return ONLY JSON."
     });

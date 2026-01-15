@@ -11,11 +11,16 @@ const icon = L.icon({
     iconAnchor: [12, 41]
 });
 
+// Convert OSRM duration to minutes
+const convertDurationToMinutes = (duration: number) => Math.round(duration / 60);
+
 // Helper to control map view (Center vs Route)
 function MapController({ center, routePath }: { center: [number, number], routePath?: [number, number][] | null }) {
     const map = useMap();
 
     useEffect(() => {
+        if (!map) return; // Guard against undefined map
+        
         if (routePath && routePath.length > 0) {
             // If route exists, fit bounds to show full path
             const bounds = L.latLngBounds(routePath);
