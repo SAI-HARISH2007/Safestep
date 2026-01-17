@@ -510,17 +510,17 @@ export default function Home() {
 
   // Dynamic Theme Colors
   const getThemeClass = () => {
-    // Base overrides
-    if (theme === 'light') return manualMode === 'safe' ? 'from-emerald-100 to-slate-50' : manualMode === 'caution' ? 'from-amber-100 to-slate-50' : manualMode === 'danger' ? 'from-red-100 to-slate-50' : 'bg-slate-50';
+    // Base overrides - Explicit casts to satisfy strict TS build
+    if ((theme as string) === 'light') return manualMode === 'safe' ? 'from-emerald-100 to-slate-50' : manualMode === 'caution' ? 'from-amber-100 to-slate-50' : manualMode === 'danger' ? 'from-red-100 to-slate-50' : 'bg-slate-50';
 
     if (manualMode === 'safe') return 'from-emerald-900/30 to-slate-900';
     if (manualMode === 'caution') return 'from-amber-900/30 to-slate-900';
     if (manualMode === 'danger') return 'from-red-900/40 to-slate-900';
 
-    if (!analysis) return theme === 'light' ? 'bg-slate-50' : '';
-    if (analysis.score >= 8) return theme === 'light' ? 'from-emerald-100 to-slate-50' : 'from-emerald-900/30 to-slate-900';
-    if (analysis.score >= 5) return theme === 'light' ? 'from-amber-100 to-slate-50' : 'from-amber-900/30 to-slate-900';
-    return theme === 'light' ? 'from-red-100 to-slate-50' : 'from-red-900/40 to-slate-900';
+    if (!analysis) return (theme as string) === 'light' ? 'bg-slate-50' : '';
+    if (analysis.score >= 8) return (theme as string) === 'light' ? 'from-emerald-100 to-slate-50' : 'from-emerald-900/30 to-slate-900';
+    if (analysis.score >= 5) return (theme as string) === 'light' ? 'from-amber-100 to-slate-50' : 'from-amber-900/30 to-slate-900';
+    return (theme as string) === 'light' ? 'from-red-100 to-slate-50' : 'from-red-900/40 to-slate-900';
   }
 
   const cycleMode = () => {
@@ -530,11 +530,11 @@ export default function Home() {
     else setManualMode(null); // Back to Auto
   };
 
-  const toggleTheme = () => setTheme(prev => prev === 'dark' ? 'light' : 'dark');
+  const toggleTheme = () => setTheme(prev => (prev as string) === 'dark' ? 'light' : 'dark');
 
-  const panelBg = theme === 'light' ? 'bg-white/95 text-slate-900 shadow-slate-200' : 'bg-slate-800/95 text-white shadow-black/50';
-  const textPrimary = theme === 'light' ? 'text-slate-900' : 'text-slate-100';
-  const textSecondary = theme === 'light' ? 'text-slate-500' : 'text-slate-400';
+  const panelBg = (theme as string) === 'light' ? 'bg-white/95 text-slate-900 shadow-slate-200' : 'bg-slate-800/95 text-white shadow-black/50';
+  const textPrimary = (theme as string) === 'light' ? 'text-slate-900' : 'text-slate-100';
+  const textSecondary = (theme as string) === 'light' ? 'text-slate-500' : 'text-slate-400';
 
   return (
     <main className={`relative h-screen w-full overflow-hidden flex flex-col font-sans transition-colors duration-1000 bg-gradient-to-b ${getThemeClass()}`}>
@@ -590,7 +590,7 @@ export default function Home() {
             className={`flex items-center gap-1 px-3 py-1.5 rounded-full text-xs font-bold border transition-all shadow-lg backdrop-blur-md
                     ${activeFilter === filter.id
                 ? 'bg-neon-mint text-slate-900 border-neon-mint scale-105'
-                : `${theme === 'light' ? 'bg-white/80 border-slate-200 text-slate-700' : 'bg-slate-900/80 text-white border-slate-600'} hover:opacity-80`
+                : `${(theme as string) === 'light' ? 'bg-white/80 border-slate-200 text-slate-700' : 'bg-slate-900/80 text-white border-slate-600'} hover:opacity-80`
               } ${!isOnline ? 'opacity-50 cursor-not-allowed' : ''}`}
           >
             <span className="material-symbols-outlined text-sm">{filter.icon}</span>
@@ -789,7 +789,7 @@ export default function Home() {
             <div className={`backdrop-blur-md rounded-3xl p-5 border border-slate-700/20 shadow-2xl ${panelBg}`}>
 
               {/* Header with Modes */}
-              <div className={`flex justify-between items-center mb-4 rounded-xl p-1 ${theme === 'light' ? 'bg-slate-100' : 'bg-slate-900/50'}`}>
+              <div className={`flex justify-between items-center mb-4 rounded-xl p-1 ${(theme as string) === 'light' ? 'bg-slate-100' : 'bg-slate-900/50'}`}>
                 {[
                   { id: 'walking', icon: 'directions_walk', label: 'Walk', speed: 5 },
                   { id: 'cycling', icon: 'directions_bike', label: 'Bike', speed: 15 },
@@ -881,7 +881,7 @@ export default function Home() {
                       </div>
                     )}
                   </div>
-                  <div className={`p-3 rounded-2xl ${theme === 'light' ? 'bg-slate-100' : 'bg-slate-700/50'}`}>
+                  <div className={`p-3 rounded-2xl ${(theme as string) === 'light' ? 'bg-slate-100' : 'bg-slate-700/50'}`}>
                     <span className={`material-symbols-outlined text-4xl ${analysis.score >= 8 ? 'text-neon-mint' : analysis.score >= 5 ? 'text-yellow-400' : 'text-red-500'}`}>
                       {analysis.score >= 8 ? 'verified_user' : 'gpp_maybe'}
                     </span>
@@ -890,7 +890,7 @@ export default function Home() {
               )}
 
               {analysis && (
-                <div className={`mt-3 text-sm leading-relaxed p-3 rounded-xl border border-slate-700/50 ${theme === 'light' ? 'bg-slate-50 text-slate-700' : 'bg-slate-700/30 text-slate-300'}`}>
+                <div className={`mt-3 text-sm leading-relaxed p-3 rounded-xl border border-slate-700/50 ${(theme as string) === 'light' ? 'bg-slate-50 text-slate-700' : 'bg-slate-700/30 text-slate-300'}`}>
                   <span className="text-neon-mint mr-2 font-bold flex items-center gap-2 mb-2">
                     <span className="material-symbols-outlined text-sm">psychology</span>
                     {analysis.source === 'EST' ? 'Safety Context (Est):' : 'Real-time Analysis:'}
