@@ -1,4 +1,4 @@
-import { MapContainer, TileLayer, Marker, useMap, Polyline } from 'react-leaflet';
+import { MapContainer, TileLayer, Marker, useMap, Polyline, Popup } from 'react-leaflet';
 import 'leaflet/dist/leaflet.css';
 import L from 'leaflet';
 import { useEffect } from 'react';
@@ -17,7 +17,7 @@ function MapController({ center, routePath }: { center: [number, number], routeP
 
     useEffect(() => {
         if (!map) return; // Guard against undefined map
-        
+
         map.whenReady(() => {
             if (routePath && routePath.length > 0) {
                 // If route exists, fit bounds to show full path
@@ -37,13 +37,20 @@ export default function MapComponent({
     center,
     userLocation,
     destinationLocation,
-    routePath
+    routePath,
+    amenities = [],
+    onNavigate,
+    emergencyPath
 }: {
     center: [number, number],
     userLocation?: [number, number],
     destinationLocation?: [number, number],
-    routePath?: [number, number][] | null
+    routePath?: [number, number][] | null,
+    amenities?: Array<{ lat: number, lon: number, type: string, name: string }>,
+    onNavigate?: (lat: number, lon: number) => void,
+    emergencyPath?: [number, number][] | null
 }) {
+    const { Popup } = require('react-leaflet');
 
     return (
         <MapContainer
@@ -57,8 +64,11 @@ export default function MapComponent({
                 url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
             />
 
-            {/* Route Line from OSRM */}
-            {routePath && <Polyline positions={routePath as L.LatLngExpression[]} color="#00ff9f" weight={5} opacity={0.8} dashArray="1, 10" />}
+            {/* Emergency Line (SOS) */}
+            {emergencyPath && <Polyline positions={emergencyPath as L.LatLngExpression[]} color="#ef4444" weight={6} opacity={0.9} dashArray="10, 10" />}
+
+            {/* Standard Route Line */}
+            {routePath && !emergencyPath && <Polyline positions={routePath as L.LatLngExpression[]} color="#00ff9f" weight={5} opacity={0.8} dashArray="1, 10" />}
 
             {/* User Location Marker */}
             {userLocation && <Marker position={userLocation} icon={icon} />}
@@ -68,6 +78,49 @@ export default function MapComponent({
 
             {/* Fallback Marker */}
             {!userLocation && !destinationLocation && <Marker position={center} icon={icon} />}
+
+            {/* Amenity Markers */}
+            {amenities.map((item, idx) => {
+                let emoji = '📍';
+                let colorClass = 'text-blue-500';
+                let zIndex = 0;
+
+                if (item.type === 'restaurant') { emoji = '🍽️'; colorClass = 'text-orange-500'; }
+                else if (item.type === 'hotel') { emoji = '🛏️'; colorClass = 'text-blue-600'; }
+                else if (item.type === 'hospital') { emoji = '🏥'; colorClass = 'text-red-500'; }
+                else if (item.type === 'police') { emoji = '🛡️'; colorClass = 'text-red-700'; zIndex = 1000; }
+
+                const customIcon = L.divIcon({
+                    className: 'custom-icon',
+                    html: `<div style="font-size: 28px; filter: drop-shadow(0 2px 4px rgba(0,0,0,0.5)); transform: scale(1.1);">${emoji}</div>`,
+                    iconSize: [35, 35],
+                    iconAnchor: [17, 17]
+                });
+
+                return (
+                    <Marker key={idx} position={[item.lat, item.lon]} icon={customIcon} zIndexOffset={zIndex}>
+                        <Popup>
+                            <div className="font-sans min-w-[150px]">
+                                <strong className="block text-xs uppercase text-slate-500 mb-1">{item.type === 'police' ? 'EMERGENCY: POLICE' : item.type}</strong>
+                                <h3 className="text-lg font-bold text-slate-900 leading-tight mb-2">{item.name}</h3>
+                                {item.type !== 'police' && (
+                                    <div className="flex items-center gap-1 mb-2 text-yellow-500 text-xs">
+                                        {'★'.repeat(4)}{'☆'}
+                                        <span className="text-slate-400 ml-1">(4.0)</span>
+                                    </div>
+                                )}
+                                <button
+                                    onClick={() => onNavigate && onNavigate(item.lat, item.lon)}
+                                    className="w-full bg-blue-600 text-white text-xs font-bold py-2 rounded-lg hover:bg-blue-700 transition flex items-center justify-center gap-1"
+                                >
+                                    <span className="material-symbols-outlined text-sm">navigation</span>
+                                    NAVIGATE
+                                </button>
+                            </div>
+                        </Popup>
+                    </Marker>
+                );
+            })}
         </MapContainer>
     );
 }

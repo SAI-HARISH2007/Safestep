@@ -6,12 +6,19 @@ interface SafetyTimerProps {
     onTriggerSOS: () => void;
     isActive: boolean;
     onStop: () => void;
+    initialDuration?: number; // Duration in seconds
 }
 
-export default function SafetyTimer({ onTriggerSOS, isActive, onStop }: SafetyTimerProps) {
-    const [timeLeft, setTimeLeft] = useState(20 * 60); // 20 minutes default
+export default function SafetyTimer({ onTriggerSOS, isActive, onStop, initialDuration = 1200 }: SafetyTimerProps) {
+    const [timeLeft, setTimeLeft] = useState(initialDuration);
     const [isPaused, setIsPaused] = useState(false);
     const timerRef = useRef<NodeJS.Timeout | null>(null);
+
+    useEffect(() => {
+        if (isActive && initialDuration) {
+            setTimeLeft(initialDuration);
+        }
+    }, [isActive, initialDuration]);
 
     useEffect(() => {
         if (isActive && !isPaused && timeLeft > 0) {

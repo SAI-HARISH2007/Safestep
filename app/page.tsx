@@ -60,10 +60,29 @@ export default function Home() {
   const [activeInput, setActiveInput] = useState<'origin' | 'destination'>('destination');
   const searchTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
+  const [isOnline, setIsOnline] = useState(true);
+  const [amenities, setAmenities] = useState<Array<{ lat: number, lon: number, type: string, name: string }>>([]);
+  const [activeFilter, setActiveFilter] = useState<string | null>(null);
+
   const sosTimerRef = useRef<NodeJS.Timeout | null>(null);
   const watchIdRef = useRef<number | null>(null);
 
-  // Initial Location
+  // Offline & Service Worker
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      setIsOnline(navigator.onLine);
+      window.addEventListener('online', () => setIsOnline(true));
+      window.addEventListener('offline', () => setIsOnline(false));
+
+      if ('serviceWorker' in navigator) {
+        navigator.serviceWorker.register('/sw.js').catch(err => console.error("SW Fail:", err));
+      }
+    }
+    return () => {
+      window.removeEventListener('online', () => setIsOnline(true));
+      window.removeEventListener('offline', () => setIsOnline(false));
+    };
+  }, []);
   useEffect(() => {
     if (navigator.geolocation) {
       navigator.geolocation.getCurrentPosition(
@@ -99,10 +118,131 @@ export default function Home() {
     };
   }, [analysis]);
 
+  const [emergencyPath, setEmergencyPath] = useState<[number, number][] | null>(null);
+
+  const fetchAmenities = async (type: string, location: [number, number]): Promise<any[]> => {
+    try {
+      const [lat, lon] = location;
+      const radius = type === 'police' ? 5000 : 2000;
+
+
+      const query = `[out:json][timeout:15];node["amenity"="${type}"](around:${radius},${lat},${lon});out body;`;
+
+      const endpoints = [
+        "https://overpass-api.de/api/interpreter",
+        "https://api.openstreetmap.fr/oapi/interpreter", // Fallback Mirror
+        "https://overpass.kumi.systems/api/interpreter" // Another Fallback
+      ];
+
+      let data;
+      for (const endpoint of endpoints) {
+        try {
+          console.log(`Fetching ${type} from ${endpoint}...`);
+          const res = await fetch(`${endpoint}?data=${encodeURIComponent(query)}`, {
+            headers: { 'User-Agent': 'SafeStep/1.0 (Student Project)' },
+            signal: AbortSignal.timeout(10000) // 10s strict client timeout
+          });
+
+          if (res.ok) {
+            const text = await res.text();
+            try {
+              data = JSON.parse(text);
+              if (data && data.elements) break; // Success
+            } catch (e) {
+              console.warn(`Non-JSON from ${endpoint}`);
+            }
+          } else {
+            console.warn(`Error ${res.status} from ${endpoint}`);
+          }
+        } catch (e) {
+          console.warn(`Failed to fetch from ${endpoint}:`, e);
+        }
+      }
+
+      const elements = data?.elements || [];
+
+      if (elements.length > 0) {
+        const newAmenities = elements.map((el: any) => ({
+          lat: el.lat,
+          lon: el.lon,
+          type: type,
+          name: el.tags.name || "Unknown"
+        }));
+
+        if (type === 'police') {
+          setAmenities(newAmenities);
+          if (userLocation) {
+            let closestPolice: { lat: number; lon: number; } | null = null;
+            let minDistance = Infinity;
+
+            // Simple Euclidean distance for MVP
+            const getDistance = (lat1: number, lon1: number, lat2: number, lon2: number) => {
+              const dx = lat1 - lat2;
+              const dy = lon1 - lon2;
+              return dx * dx + dy * dy; // Squared distance for comparison
+            };
+
+            for (const amenity of newAmenities) {
+              const dist = getDistance(userLocation[0], userLocation[1], amenity.lat, amenity.lon);
+              if (dist < minDistance) {
+                minDistance = dist;
+                closestPolice = amenity;
+              }
+            }
+
+            if (closestPolice) {
+              setEmergencyPath([userLocation, [closestPolice.lat, closestPolice.lon]]);
+            }
+          }
+        } else {
+          setAmenities(prev => activeFilter === type ? [] : newAmenities);
+        }
+        return newAmenities;
+      }
+    } catch (e) {
+      console.error("Overpass API Error:", e);
+    }
+    return [];
+  };
+
+  const toggleFilter = (type: string) => {
+    setEmergencyPath(null); // Clear emergency lines when filtering normal stuff
+    if (activeFilter === type) {
+      setActiveFilter(null);
+      setAmenities([]);
+    } else {
+      setActiveFilter(type);
+      fetchAmenities(type, center);
+    }
+  };
+
+  const handleNavigate = (lat: number, lon: number) => {
+    setDestination(`${lat.toFixed(5)}, ${lon.toFixed(5)}`);
+    setDestinationLocation([lat, lon]);
+    // Trigger Route
+    handleSearch({ preventDefault: () => { } } as React.FormEvent);
+  };
+
   const geocode = async (query: string): Promise<[number, number] | null> => {
     try {
-      const res = await fetch(`${NOMINATIM_BASE_URL}?format=json&q=${encodeURIComponent(query)}&limit=1`);
-      const data = await res.json();
+      const res = await fetch(`${NOMINATIM_BASE_URL}?format=json&q=${encodeURIComponent(query)}&limit=1`, {
+        headers: { 'User-Agent': 'SafeStep/1.0 (Student Project)' }
+      });
+
+      if (!res.ok) {
+        console.warn(`Nominatim Error: ${res.status}`);
+        return null;
+      }
+
+      const text = await res.text();
+      let data;
+      try {
+        data = JSON.parse(text);
+      } catch (e) {
+        console.error("Nominatim returned non-JSON:", text.substring(0, 500));
+        return null;
+      }
+
       if (data && data.length > 0) {
         return [parseFloat(data[0].lat), parseFloat(data[0].lon)];
       }
@@ -174,11 +314,22 @@ export default function Home() {
         minTime
       ]);
       setAnalysis(result);
+      // Cache Result
+      localStorage.setItem('lastAnalysis', JSON.stringify(result));
+
       if (user) setSafetyTimerActive(true); // Auto-start timer if logged in
 
     } catch (error) {
       console.error(error);
-      // Fallback is now handled in service, so setAnalysis will likely have data even on error
+
+      // Offline Fallback
+      if (!isOnline) {
+        const cached = localStorage.getItem('lastAnalysis');
+        if (cached) {
+          const parsed = JSON.parse(cached);
+          setAnalysis({ ...parsed, source: 'EST', tip: "[OFFLINE CACHE] " + parsed.tip });
+        }
+      }
     } finally {
       setIsLoading(false);
     }
@@ -215,8 +366,25 @@ export default function Home() {
           const lat = center[0];
           const lon = center[1];
           const viewbox = `${lon - 0.5},${lat + 0.5},${lon + 0.5},${lat - 0.5}`;
-          const res = await fetch(`${NOMINATIM_BASE_URL}?format=json&q=${encodeURIComponent(value)}&limit=5&viewbox=${viewbox}&bounded=1`);
-          const data = await res.json();
+
+          const res = await fetch(`${NOMINATIM_BASE_URL}?format=json&q=${encodeURIComponent(value)}&limit=5&viewbox=${viewbox}&bounded=1`, {
+            headers: { 'User-Agent': 'SafeStep/1.0 (Student Project)' }
+          });
+
+          if (!res.ok) {
+            console.warn(`Nominatim Autocomplete Error: ${res.status}`);
+            return;
+          }
+
+          const text = await res.text();
+          let data;
+          try {
+            data = JSON.parse(text);
+          } catch (e) {
+            console.error("Nominatim Autocomplete returned non-JSON:", text.substring(0, 200));
+            return;
+          }
+
           setSuggestions(data);
           setShowSuggestions(true);
         } catch (err) { console.error(err); }
@@ -256,11 +424,35 @@ export default function Home() {
     }
   };
 
-  const triggerSOS = () => {
+  const triggerSOS = async () => {
     setSosActive(true);
     setIsHoldingSOS(false);
     if (navigator.vibrate) navigator.vibrate([500, 200, 500]);
-    setTimeout(() => setSosActive(false), 5000);
+
+    // Fetch Police Stations Visuals
+    if (isOnline && userLocation) {
+      const stations = await fetchAmenities('police', userLocation);
+
+      if (stations && stations.length > 0) {
+        // Find Closest
+        let closest = stations[0];
+        let minDist = 99999999;
+
+        stations.forEach(st => {
+          const d = Math.sqrt(Math.pow(st.lat - userLocation[0], 2) + Math.pow(st.lon - userLocation[1], 2));
+          if (d < minDist) {
+            minDist = d;
+            closest = st;
+          }
+        });
+
+        setEmergencyPath([userLocation, [closest.lat, closest.lon]]);
+        // Auto-center to show both
+        setCenter([(userLocation[0] + closest.lat) / 2, (userLocation[1] + closest.lon) / 2]);
+      }
+    }
+
+    setTimeout(() => setSosActive(false), 8000); // 8 seconds display
   };
 
   const formatArrival = (seconds: number) => {
@@ -276,15 +468,53 @@ export default function Home() {
       {showAuthModal && <AuthModal onClose={() => setShowAuthModal(false)} />}
 
       {/* Safety Timer Overlay */}
+
       <SafetyTimer
         isActive={safetyTimerActive}
         onStop={() => setSafetyTimerActive(false)}
         onTriggerSOS={triggerSOS}
+        initialDuration={(() => {
+          const currentRoute = routeOptions[travelMode];
+          if (!currentRoute || currentRoute.distance === 0) return 1200; // Default 20 mins
+          const speed = travelMode === 'walking' ? 5 : travelMode === 'cycling' ? 15 : 40;
+          return Math.round(((currentRoute.distance / 1000) / speed) * 3600);
+        })()}
       />
 
       {/* Map Layer */}
       <div className="absolute inset-0 z-0">
-        <Map center={center} userLocation={userLocation} destinationLocation={destinationLocation} routePath={routePath} />
+        <Map
+          center={center}
+          userLocation={userLocation}
+          destinationLocation={destinationLocation}
+          routePath={routePath}
+          amenities={amenities}
+          onNavigate={handleNavigate}
+          emergencyPath={emergencyPath}
+        />
+      </div>
+
+      {/* Map Filters (Safe Havens) */}
+      <div className="absolute top-4 left-1/2 transform -translate-x-1/2 z-20 flex gap-2 overflow-x-auto max-w-full px-4 no-scrollbar">
+        {[
+          { id: 'restaurant', label: 'Food', icon: 'restaurant' },
+          { id: 'hotel', label: 'Hotels', icon: 'hotel' },
+          { id: 'hospital', label: 'Hospitals', icon: 'local_hospital' }
+        ].map(filter => (
+          <button
+            key={filter.id}
+            onClick={() => toggleFilter(filter.id)}
+            disabled={!isOnline}
+            className={`flex items-center gap-1 px-3 py-1.5 rounded-full text-xs font-bold border transition-all shadow-lg backdrop-blur-md
+                    ${activeFilter === filter.id
+                ? 'bg-neon-mint text-slate-900 border-neon-mint scale-105'
+                : 'bg-slate-900/80 text-white border-slate-600 hover:bg-slate-800'
+              } ${!isOnline ? 'opacity-50 cursor-not-allowed' : ''}`}
+          >
+            <span className="material-symbols-outlined text-sm">{filter.icon}</span>
+            {filter.label}
+          </button>
+        ))}
       </div>
 
       {/* Top Bar: Auth & User Status */}
@@ -414,10 +644,23 @@ export default function Home() {
       {/* SOS Alert Notification */}
       {sosActive && (
         <div className="absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 z-50 w-full max-w-sm px-4">
-          <div className="bg-red-600 text-white rounded-3xl p-6 shadow-2xl border-2 border-red-400 animate-bounce text-center">
+          <div className={`text-white rounded-3xl p-6 shadow-2xl border-2 animate-bounce text-center ${!isOnline ? 'bg-orange-600 border-orange-400' : 'bg-red-600 border-red-400'}`}>
             <span className="material-symbols-outlined text-6xl mb-2">warning</span>
-            <h2 className="text-2xl font-bold mb-1">SOS SENT!</h2>
-            <p className="text-red-100">Alert sent to guardians at {new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}.</p>
+            <h2 className="text-2xl font-bold mb-1">{!isOnline ? 'OFFLINE SOS' : 'SOS SENT!'}</h2>
+
+            {!isOnline ? (
+              <div className="mt-2">
+                <p className="text-orange-100 text-sm mb-3">No Internet. Send SMS manually.</p>
+                <a
+                  href={`sms:?body=EMERGENCY! I need help. My location: ${userLocation ? `${userLocation[0]},${userLocation[1]}` : 'Unknown'}`}
+                  className="block w-full bg-white text-orange-700 font-black py-3 rounded-xl hover:bg-orange-50 transition"
+                >
+                  SEND SMS NOW
+                </a>
+              </div>
+            ) : (
+              <p className="text-red-100">Alert sent to guardians at {new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}.</p>
+            )}
           </div>
         </div>
       )}
