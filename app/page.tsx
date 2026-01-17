@@ -10,6 +10,9 @@ import { logoutUser } from './lib/firebase';
 import AuthModal from './components/AuthModal';
 import GuardianManager from './components/GuardianManager';
 import SafetyTimer from './components/SafetyTimer';
+import VoiceSOS from './components/VoiceSOS';
+import ShareTrip from './components/ShareTrip';
+import FakeCall from './components/FakeCall';
 
 // Dynamically import Map to avoid SSR issues
 const Map = dynamic(() => import('./components/MapComponent'), {
@@ -33,6 +36,10 @@ export default function Home() {
   const [showAuthModal, setShowAuthModal] = useState(false);
   const [showGuardians, setShowGuardians] = useState(false);
   const [safetyTimerActive, setSafetyTimerActive] = useState(false);
+  const [showFakeCall, setShowFakeCall] = useState(false);
+  const [activeWindow, setActiveWindow] = useState<'analysis' | 'guardians' | null>(null);
+  const [manualMode, setManualMode] = useState<'safe' | 'caution' | 'danger' | null>(null);
+  const [theme, setTheme] = useState<'dark' | 'light'>('dark');
 
   // Map & Routing State
   const [origin, setOrigin] = useState('Current Location');
@@ -126,7 +133,9 @@ export default function Home() {
       const radius = type === 'police' ? 5000 : 2000;
 
 
-      const query = `[out:json][timeout:15];node["amenity"="${type}"](around:${radius},${lat},${lon});out body;`;
+
+      // Fix: Use 'nwr' (node/way/relation) to catch buildings, and 'out center' for valid coords
+      const query = `[out:json][timeout:15];nwr["amenity"="${type}"](around:${radius},${lat},${lon});out center;`;
 
       const endpoints = [
         "https://overpass-api.de/api/interpreter",
@@ -163,11 +172,11 @@ export default function Home() {
 
       if (elements.length > 0) {
         const newAmenities = elements.map((el: any) => ({
-          lat: el.lat,
-          lon: el.lon,
+          lat: el.lat || el.center?.lat, // Handle 'node' vs 'way/relation'
+          lon: el.lon || el.center?.lon,
           type: type,
-          name: el.tags.name || "Unknown"
-        }));
+          name: el.tags?.name || `${type.charAt(0).toUpperCase() + type.slice(1)}` // Fallback name
+        })).filter((a: any) => a.lat && a.lon); // Ensure valid coords
 
         if (type === 'police') {
           setAmenities(newAmenities);
@@ -246,8 +255,15 @@ export default function Home() {
       if (data && data.length > 0) {
         return [parseFloat(data[0].lat), parseFloat(data[0].lon)];
       }
-    } catch (e) { console.error(e); }
+    } catch (e) {
+      console.error(e);
+    }
     return null;
+  };
+
+  // Cache Key Generator
+  const getCacheKey = (start: [number, number], end: [number, number], mode: string) => {
+    return `route_${start[0].toFixed(4)}_${start[1].toFixed(4)}_${end[0].toFixed(4)}_${end[1].toFixed(4)}_${mode}`;
   };
 
   const handleSearch = async (e: React.FormEvent) => {
@@ -260,7 +276,8 @@ export default function Home() {
     // Simulate "Thinking" time
     const minTime = new Promise(resolve => setTimeout(resolve, 1500));
 
-    let startCoords = userLocation;
+    let startCoords: [number, number] | undefined = userLocation;
+    let endCoords: [number, number] | undefined = destinationLocation;
 
     // Handle Manual Origin
     if (origin !== 'Current Location') {
@@ -281,7 +298,6 @@ export default function Home() {
     try {
       // Logic for separate destination coordinate fetch if needed, 
       // but usually destinationLocation is set by autocomplete click.
-      let endCoords = destinationLocation;
       if (!endCoords) {
         const coords = await geocode(destination);
         if (coords) {
@@ -314,7 +330,18 @@ export default function Home() {
         minTime
       ]);
       setAnalysis(result);
-      // Cache Result
+
+      // Cache Result for Offline Resilience
+      if (startCoords && endCoords) {
+        const cacheKey = getCacheKey(startCoords, endCoords, travelMode);
+        localStorage.setItem(cacheKey, JSON.stringify({
+          routePath: routePath,
+          analysis: result,
+          timestamp: Date.now()
+        }));
+      }
+
+      // Also Cache standard 'lastAnalysis' for generic fallback
       localStorage.setItem('lastAnalysis', JSON.stringify(result));
 
       if (user) setSafetyTimerActive(true); // Auto-start timer if logged in
@@ -323,11 +350,22 @@ export default function Home() {
       console.error(error);
 
       // Offline Fallback
-      if (!isOnline) {
-        const cached = localStorage.getItem('lastAnalysis');
-        if (cached) {
-          const parsed = JSON.parse(cached);
-          setAnalysis({ ...parsed, source: 'EST', tip: "[OFFLINE CACHE] " + parsed.tip });
+      if (!isOnline && startCoords && endCoords) {
+        // Try precise cache first
+        const cacheKey = getCacheKey(startCoords, endCoords, travelMode);
+        const specificCache = localStorage.getItem(cacheKey);
+
+        if (specificCache) {
+          const cachedData = JSON.parse(specificCache);
+          setAnalysis({ ...cachedData.analysis, source: 'EST', tip: "[OFFLINE] Using cached safety data." });
+          // Ideally we'd also restore the route path here if possible, but routePath state is simple array
+        } else {
+          // Fallback to generic last
+          const cached = localStorage.getItem('lastAnalysis');
+          if (cached) {
+            const parsed = JSON.parse(cached);
+            setAnalysis({ ...parsed, source: 'EST', tip: "[OFFLINE CACHE] " + parsed.tip });
+          }
         }
       }
     } finally {
@@ -429,16 +467,25 @@ export default function Home() {
     setIsHoldingSOS(false);
     if (navigator.vibrate) navigator.vibrate([500, 200, 500]);
 
-    // Fetch Police Stations Visuals
+    // Fetch Police & Hospitals Visuals
     if (isOnline && userLocation) {
-      const stations = await fetchAmenities('police', userLocation);
+      // Clear other amenities to reduce clutter
+      setAmenities([]);
 
-      if (stations && stations.length > 0) {
+      // Parallel fetch for Police AND Hospitals
+      const [police, hospitals] = await Promise.all([
+        fetchAmenities('police', userLocation),
+        fetchAmenities('hospital', userLocation)
+      ]);
+
+      const emergencyStations = [...(police || []), ...(hospitals || [])];
+
+      if (emergencyStations && emergencyStations.length > 0) {
         // Find Closest
-        let closest = stations[0];
+        let closest = emergencyStations[0];
         let minDist = 99999999;
 
-        stations.forEach(st => {
+        emergencyStations.forEach((st: any) => {
           const d = Math.sqrt(Math.pow(st.lat - userLocation[0], 2) + Math.pow(st.lon - userLocation[1], 2));
           if (d < minDist) {
             minDist = d;
@@ -461,8 +508,42 @@ export default function Home() {
     return now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
   };
 
+  // Dynamic Theme Colors
+  const getThemeClass = () => {
+    // Base overrides
+    if (theme === 'light') return manualMode === 'safe' ? 'from-emerald-100 to-slate-50' : manualMode === 'caution' ? 'from-amber-100 to-slate-50' : manualMode === 'danger' ? 'from-red-100 to-slate-50' : 'bg-slate-50';
+
+    if (manualMode === 'safe') return 'from-emerald-900/30 to-slate-900';
+    if (manualMode === 'caution') return 'from-amber-900/30 to-slate-900';
+    if (manualMode === 'danger') return 'from-red-900/40 to-slate-900';
+
+    if (!analysis) return theme === 'light' ? 'bg-slate-50' : '';
+    if (analysis.score >= 8) return theme === 'light' ? 'from-emerald-100 to-slate-50' : 'from-emerald-900/30 to-slate-900';
+    if (analysis.score >= 5) return theme === 'light' ? 'from-amber-100 to-slate-50' : 'from-amber-900/30 to-slate-900';
+    return theme === 'light' ? 'from-red-100 to-slate-50' : 'from-red-900/40 to-slate-900';
+  }
+
+  const cycleMode = () => {
+    if (!manualMode) setManualMode('safe');
+    else if (manualMode === 'safe') setManualMode('caution');
+    else if (manualMode === 'caution') setManualMode('danger');
+    else setManualMode(null); // Back to Auto
+  };
+
+  const toggleTheme = () => setTheme(prev => prev === 'dark' ? 'light' : 'dark');
+
+  const panelBg = theme === 'light' ? 'bg-white/95 text-slate-900 shadow-slate-200' : 'bg-slate-800/95 text-white shadow-black/50';
+  const textPrimary = theme === 'light' ? 'text-slate-900' : 'text-slate-100';
+  const textSecondary = theme === 'light' ? 'text-slate-500' : 'text-slate-400';
+
   return (
-    <main className="relative h-screen w-full bg-slate-900 overflow-hidden flex flex-col font-sans">
+    <main className={`relative h-screen w-full overflow-hidden flex flex-col font-sans transition-colors duration-1000 bg-gradient-to-b ${getThemeClass()}`}>
+
+      {/* Voice Trigger */}
+      <VoiceSOS onTrigger={startSOS} />
+
+      {/* Fake Call Overlay */}
+      {showFakeCall && <FakeCall onClose={() => setShowFakeCall(false)} />}
 
       {/* Auth Modal */}
       {showAuthModal && <AuthModal onClose={() => setShowAuthModal(false)} />}
@@ -499,7 +580,8 @@ export default function Home() {
         {[
           { id: 'restaurant', label: 'Food', icon: 'restaurant' },
           { id: 'hotel', label: 'Hotels', icon: 'hotel' },
-          { id: 'hospital', label: 'Hospitals', icon: 'local_hospital' }
+          { id: 'hospital', label: 'Hospitals', icon: 'local_hospital' },
+          { id: 'police', label: 'Police', icon: 'local_police' }
         ].map(filter => (
           <button
             key={filter.id}
@@ -508,7 +590,7 @@ export default function Home() {
             className={`flex items-center gap-1 px-3 py-1.5 rounded-full text-xs font-bold border transition-all shadow-lg backdrop-blur-md
                     ${activeFilter === filter.id
                 ? 'bg-neon-mint text-slate-900 border-neon-mint scale-105'
-                : 'bg-slate-900/80 text-white border-slate-600 hover:bg-slate-800'
+                : `${theme === 'light' ? 'bg-white/80 border-slate-200 text-slate-700' : 'bg-slate-900/80 text-white border-slate-600'} hover:opacity-80`
               } ${!isOnline ? 'opacity-50 cursor-not-allowed' : ''}`}
           >
             <span className="material-symbols-outlined text-sm">{filter.icon}</span>
@@ -538,16 +620,41 @@ export default function Home() {
             </div>
 
             <button
+              onClick={toggleTheme}
+              className={`p-2 rounded-full shadow-lg border transition ${panelBg} border-slate-700/20`}
+              title="Toggle Theme"
+            >
+              <span className="material-symbols-outlined">{theme === 'dark' ? 'light_mode' : 'dark_mode'}</span>
+            </button>
+
+            <button
               onClick={() => setShowGuardians(!showGuardians)}
-              className="bg-slate-800/90 text-white p-2 rounded-full shadow-lg border border-slate-700 hover:bg-slate-700 transition"
+              className={`p-2 rounded-full shadow-lg border transition ${panelBg} border-slate-700/20`}
               title="Manage Guardians"
             >
               <span className="material-symbols-outlined">verified_user</span>
             </button>
 
-            <div className={`bg-slate-800/90 px-3 py-2 rounded-full shadow-lg border border-slate-700 flex items-center gap-2 text-xs font-bold ${analysis ? 'text-neon-mint' : 'text-slate-500'}`}>
-              <span className="material-symbols-outlined text-sm">smart_toy</span>
-              {analysis ? 'AI ACTIVE' : 'AI READY'}
+            <button
+              onClick={() => setShowFakeCall(true)}
+              className={`p-2 rounded-full shadow-lg border transition ${panelBg} border-slate-700/20`}
+              title="Fake Call"
+            >
+              <span className="material-symbols-outlined">call</span>
+            </button>
+
+            <div
+              onClick={cycleMode}
+              className={`bg-slate-800/90 px-3 py-2 rounded-full shadow-lg border border-slate-700 flex items-center gap-2 text-xs font-bold cursor-pointer hover:bg-slate-700 transition select-none
+                ${manualMode ? 'ring-2 ring-neon-mint' : ''}
+                ${(manualMode === 'safe' || (!manualMode && analysis && analysis.score >= 8)) ? 'text-neon-mint' :
+                  (manualMode === 'caution' || (!manualMode && analysis && analysis.score >= 5 && analysis.score < 8)) ? 'text-yellow-400' :
+                    (manualMode === 'danger' || (!manualMode && analysis && analysis.score < 5)) ? 'text-red-500' : 'text-slate-500'}`}
+            >
+              <span className="material-symbols-outlined text-sm">
+                {manualMode ? 'tune' : 'smart_toy'}
+              </span>
+              {manualMode ? `MODE: ${manualMode.toUpperCase()}` : (analysis ? 'AI ACTIVE' : 'AI READY')}
             </div>
           </>
         ) : (
@@ -563,21 +670,24 @@ export default function Home() {
 
       {/* Guardians Panel */}
       {showGuardians && (
-        <div className="absolute top-16 right-4 z-20 w-72 animate-in slide-in-from-top-4">
+        <div
+          onMouseDown={() => setActiveWindow('guardians')}
+          className={`absolute top-16 right-4 w-72 animate-in slide-in-from-top-4 ${activeWindow === 'guardians' ? 'z-50' : 'z-40'}`}
+        >
           <GuardianManager />
         </div>
       )}
 
       {/* Search Bar - Floating Top Left */}
       <div className="absolute top-4 left-4 z-20 w-full max-w-sm pointer-events-none">
-        <form onSubmit={handleSearch} className="pointer-events-auto bg-slate-900/90 backdrop-blur-md p-4 rounded-3xl border border-slate-700 shadow-2xl">
+        <form onSubmit={handleSearch} className={`pointer-events-auto backdrop-blur-md p-4 rounded-3xl border border-slate-700/20 shadow-2xl ${panelBg}`}>
 
           {/* Origin Input */}
-          <div className="relative flex items-center border-b border-slate-700/50 pb-2">
-            <span className="material-symbols-outlined text-slate-400 w-8">my_location</span>
+          <div className="relative flex items-center border-b border-slate-700/20 pb-2">
+            <span className={`material-symbols-outlined w-8 ${textSecondary}`}>my_location</span>
             <input
               type="text"
-              className="w-full bg-transparent text-slate-100 placeholder-slate-500 text-sm focus:outline-none"
+              className={`w-full bg-transparent placeholder-slate-400 text-sm focus:outline-none ${textPrimary}`}
               placeholder="Current Location"
               value={origin}
               onChange={(e) => handleInput(e.target.value, 'origin')}
@@ -594,7 +704,7 @@ export default function Home() {
             <span className="material-symbols-outlined text-neon-mint w-8">location_on</span>
             <input
               type="text"
-              className="w-full bg-transparent text-slate-100 placeholder-slate-500 text-sm focus:outline-none font-semibold"
+              className={`w-full bg-transparent placeholder-slate-400 text-sm focus:outline-none font-semibold ${textPrimary}`}
               placeholder="Where to?"
               value={destination}
               onChange={(e) => handleInput(e.target.value, 'destination')}
@@ -666,19 +776,20 @@ export default function Home() {
       )}
 
       {/* Draggable AI Analysis Card */}
-      <div className="absolute inset-x-0 bottom-0 pointer-events-none z-50 overflow-visible h-screen"> {/* Increased Z-Index and container height */}
+      <div className={`absolute inset-x-0 bottom-0 pointer-events-none overflow-visible h-screen ${activeWindow === 'analysis' ? 'z-50' : 'z-40'}`}>
         {analysis && !isLoading && (
           <motion.div
             drag
             dragConstraints={{ left: 0, right: 0, top: 0, bottom: 0 }} /* Allow full movement relative to parent */
             dragMomentum={false}
             initial={{ x: 20, y: 20 }}
-            className="pointer-events-auto absolute bottom-24 right-8 w-full max-w-lg"
+            onPointerDown={() => setActiveWindow('analysis')}
+            className="pointer-events-auto absolute bottom-24 right-8 w-full max-w-lg cursor-grab active:cursor-grabbing"
           >
-            <div className="bg-slate-800/95 backdrop-blur-md rounded-3xl p-5 border border-slate-700 shadow-2xl cursor-grab active:cursor-grabbing">
+            <div className={`backdrop-blur-md rounded-3xl p-5 border border-slate-700/20 shadow-2xl ${panelBg}`}>
 
               {/* Header with Modes */}
-              <div className="flex justify-between items-center mb-4 bg-slate-900/50 rounded-xl p-1">
+              <div className={`flex justify-between items-center mb-4 rounded-xl p-1 ${theme === 'light' ? 'bg-slate-100' : 'bg-slate-900/50'}`}>
                 {[
                   { id: 'walking', icon: 'directions_walk', label: 'Walk', speed: 5 },
                   { id: 'cycling', icon: 'directions_bike', label: 'Bike', speed: 15 },
@@ -704,7 +815,7 @@ export default function Home() {
                     <button
                       key={mode.id}
                       onClick={() => switchMode(mode.id as any)}
-                      className={`flex-1 flex flex-col items-center py-2 rounded-lg transition-all ${travelMode === mode.id ? 'bg-slate-700 text-neon-mint shadow-sm' : 'text-slate-500 hover:text-slate-300'}`}
+                      className={`flex-1 flex flex-col items-center py-2 rounded-lg transition-all ${travelMode === mode.id ? 'bg-slate-700 text-neon-mint shadow-sm' : `${textSecondary} hover:text-slate-300`}`}
                     >
                       <span className="material-symbols-outlined mb-1">{mode.icon}</span>
                       <span className="text-[10px] uppercase font-bold tracking-wider">{mode.label}</span>
@@ -716,8 +827,8 @@ export default function Home() {
 
               {/* Arrival Time */}
               <div className="text-center mb-4">
-                <p className="text-slate-400 text-xs uppercase tracking-widest">Expected Arrival</p>
-                <p className="text-2xl font-bold text-white">
+                <p className={`${textSecondary} text-xs uppercase tracking-widest`}>Expected Arrival</p>
+                <p className={`text-2xl font-bold ${textPrimary}`}>
                   {(() => {
                     const currentRoute = routeOptions[travelMode];
                     if (!currentRoute) return '--:--';
@@ -770,7 +881,7 @@ export default function Home() {
                       </div>
                     )}
                   </div>
-                  <div className="p-3 bg-slate-700/50 rounded-2xl">
+                  <div className={`p-3 rounded-2xl ${theme === 'light' ? 'bg-slate-100' : 'bg-slate-700/50'}`}>
                     <span className={`material-symbols-outlined text-4xl ${analysis.score >= 8 ? 'text-neon-mint' : analysis.score >= 5 ? 'text-yellow-400' : 'text-red-500'}`}>
                       {analysis.score >= 8 ? 'verified_user' : 'gpp_maybe'}
                     </span>
@@ -779,7 +890,7 @@ export default function Home() {
               )}
 
               {analysis && (
-                <div className="mt-3 text-slate-300 text-sm leading-relaxed bg-slate-700/30 p-3 rounded-xl border border-slate-700/50">
+                <div className={`mt-3 text-sm leading-relaxed p-3 rounded-xl border border-slate-700/50 ${theme === 'light' ? 'bg-slate-50 text-slate-700' : 'bg-slate-700/30 text-slate-300'}`}>
                   <span className="text-neon-mint mr-2 font-bold flex items-center gap-2 mb-2">
                     <span className="material-symbols-outlined text-sm">psychology</span>
                     {analysis.source === 'EST' ? 'Safety Context (Est):' : 'Real-time Analysis:'}
@@ -787,6 +898,12 @@ export default function Home() {
                   {analysis.tip}
                 </div>
               )}
+
+              {/* Live Sharing & ETA */}
+              {analysis && routeOptions[travelMode] && (
+                <ShareTrip etaSeconds={((routeOptions[travelMode]!.distance / 1000) / (travelMode === 'walking' ? 5 : travelMode === 'cycling' ? 15 : 40)) * 3600} />
+              )}
+
               {/* End Analysis Content */}
             </div>
           </motion.div>

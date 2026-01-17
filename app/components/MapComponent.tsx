@@ -61,7 +61,10 @@ export default function MapComponent({
             <MapController center={center} routePath={routePath} />
             <TileLayer
                 attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
-                url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+                url={emergencyPath
+                    ? "https://cartodb-basemaps-{s}.global.ssl.fastly.net/dark_all/{z}/{x}/{y}.png"
+                    : "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+                }
             />
 
             {/* Emergency Line (SOS) */}
@@ -87,12 +90,16 @@ export default function MapComponent({
 
                 if (item.type === 'restaurant') { emoji = '🍽️'; colorClass = 'text-orange-500'; }
                 else if (item.type === 'hotel') { emoji = '🛏️'; colorClass = 'text-blue-600'; }
-                else if (item.type === 'hospital') { emoji = '🏥'; colorClass = 'text-red-500'; }
+                else if (item.type === 'hospital') { emoji = '🏥'; colorClass = 'text-red-600'; zIndex = 900; }
                 else if (item.type === 'police') { emoji = '🛡️'; colorClass = 'text-red-700'; zIndex = 1000; }
+
+                // Add pulse effect for emergency services
+                const isEmergency = item.type === 'police' || item.type === 'hospital';
+                const pulseClass = isEmergency ? 'animate-pulse scale-125' : '';
 
                 const customIcon = L.divIcon({
                     className: 'custom-icon',
-                    html: `<div style="font-size: 28px; filter: drop-shadow(0 2px 4px rgba(0,0,0,0.5)); transform: scale(1.1);">${emoji}</div>`,
+                    html: `<div class="${pulseClass}" style="font-size: 28px; filter: drop-shadow(0 2px 4px rgba(0,0,0,0.5)); transform: ${isEmergency ? 'scale(1.3)' : 'scale(1.1)'}; transition: all 0.3s ease;">${emoji}</div>`,
                     iconSize: [35, 35],
                     iconAnchor: [17, 17]
                 });
